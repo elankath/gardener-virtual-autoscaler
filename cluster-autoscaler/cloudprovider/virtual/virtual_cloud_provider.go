@@ -639,10 +639,10 @@ func (v *VirtualCloudProvider) reloadVirtualNodeGroups() error {
 }
 
 func (v *VirtualCloudProvider) refreshNodes() error {
-	if v.config.Mode == gst.AutoscalerReplayerMode {
-		klog.Info("autoscaler is being controlled by replayer, will not refresh nodes")
-		return nil
-	}
+	//if v.config.Mode == gst.AutoscalerReplayerMode {
+	//	klog.Info("autoscaler is being controlled by replayer, will not refresh nodes")
+	//	return nil
+	//}
 	nodes, err := v.clientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return err
