@@ -43,7 +43,6 @@ type VirtualNodeGroup struct {
 var _ cloudprovider.NodeGroup = (*VirtualNodeGroup)(nil)
 
 const GPULabel = "virtual/gpu"
-const NodeGroupLabel = "worker.gardener.cloud/nodegroup"
 
 type VirtualCloudProvider struct {
 	config                 *gst.AutoScalerConfig
@@ -536,6 +535,10 @@ func (v *VirtualCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovide
 	//	return virtualNodeGroup, nil
 	//}
 	//return nil, fmt.Errorf("cant find VirtualNodeGroup with name %q", ngName)
+	if len(v.config.NodeGroups) == 0 {
+		klog.Warning("virtual autoscaler has not been initialized with nodes")
+		return nil, nil
+	}
 	poolKeyMap := v.getNodeGroupsByPoolKey()
 	nodePoolKey := poolKey{
 		poolName: node.Labels["worker.gardener.cloud/pool"],
@@ -638,48 +641,132 @@ func (v *VirtualCloudProvider) reloadVirtualNodeGroups() error {
 	return nil
 }
 
+func adjustNode(clientSet *kubernetes.Clientset, nd *corev1.Node) error {
+
+	nd, err := clientSet.CoreV1().Nodes().Get(context.Background(), nd.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("cannot get node with name %q: %w", nd.Name, err)
+	}
+	nd.Spec.Taints = lo.Filter(nd.Spec.Taints, func(item corev1.Taint, index int) bool {
+		return item.Key != "node.kubernetes.io/not-ready"
+	})
+	nodeReadyCondition := corev1.NodeCondition{
+		Type:               corev1.NodeReady,
+		Status:             corev1.ConditionTrue,
+		LastHeartbeatTime:  metav1.Time{Time: time.Now()},
+		LastTransitionTime: metav1.Time{Time: time.Now()},
+		Reason:             "KubeletReady",
+		Message:            "virtual cloud provider marking node as ready",
+	}
+
+	var conditions []corev1.NodeCondition
+	found := false
+	for _, condition := range nd.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			conditions = append(conditions, nodeReadyCondition)
+			found = true
+		} else {
+			conditions = append(conditions, condition)
+		}
+	}
+	if !found {
+		conditions = append(conditions, nodeReadyCondition)
+	}
+	nd.Status.Conditions = conditions
+	nd, err = clientSet.CoreV1().Nodes().Update(context.Background(), nd, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("cannot update node with name %q: %w", nd.Name, err)
+	}
+	return nil
+}
+
 func (v *VirtualCloudProvider) refreshNodes() error {
 	//if v.config.Mode == gst.AutoscalerReplayerMode {
 	//	klog.Info("autoscaler is being controlled by replayer, will not refresh nodes")
 	//	return nil
 	//}
-	nodes, err := v.clientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	//nodes, err := v.clientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	//if err != nil {
+	//	return err
+	//}
+	//nodesByNodeGroup := lo.GroupBy(nodes.Items, func(node corev1.Node) string {
+	//	return node.Labels[NodeGroupLabel]
+	//})
+	//var aggError error
+	//v.virtualNodeGroups.Range(func(key, value any) bool {
+	//	virtualNodeGroup := value.(*VirtualNodeGroup)
+	//	expectedSize := virtualNodeGroup.NodeGroupInfo.TargetSize
+	//	currentSize := len(nodesByNodeGroup[virtualNodeGroup.nonNamespacedName])
+	//	delta := expectedSize - currentSize
+	//	if delta > 0 {
+	//		klog.Infof("add %d extra nodes in nodegroup %s", delta, virtualNodeGroup.nonNamespacedName)
+	//		err = virtualNodeGroup.IncreaseSize(delta)
+	//		if err != nil {
+	//			aggError = err
+	//			return false
+	//		}
+	//	} else {
+	//		klog.Infof("delete %d extra nodes in nodegroup %s", -delta, virtualNodeGroup.nonNamespacedName)
+	//		err = virtualNodeGroup.DecreaseTargetSize(-delta)
+	//		if err != nil {
+	//			aggError = err
+	//			return false
+	//		}
+	//	}
+	//	return true
+	//})
+	initNodes := v.config.InitNodes
+	existingNodes, err := v.clientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
-	nodesByNodeGroup := lo.GroupBy(nodes.Items, func(node corev1.Node) string {
-		return node.Labels[NodeGroupLabel]
+	existingNodesByName := lo.KeyBy(existingNodes.Items, func(n corev1.Node) string {
+		return n.Name
 	})
-	var aggError error
-	v.virtualNodeGroups.Range(func(key, value any) bool {
-		virtualNodeGroup := value.(*VirtualNodeGroup)
-		expectedSize := virtualNodeGroup.NodeGroupInfo.TargetSize
-		currentSize := len(nodesByNodeGroup[virtualNodeGroup.nonNamespacedName])
-		delta := expectedSize - currentSize
-		if delta > 0 {
-			klog.Infof("add %d extra nodes in nodegroup %s", delta, virtualNodeGroup.nonNamespacedName)
-			err = virtualNodeGroup.IncreaseSize(delta)
-			if err != nil {
-				aggError = err
-				return false
-			}
-		} else {
-			klog.Infof("delete %d extra nodes in nodegroup %s", -delta, virtualNodeGroup.nonNamespacedName)
-			err = virtualNodeGroup.DecreaseTargetSize(-delta)
-			if err != nil {
-				aggError = err
-				return false
-			}
+	for _, nodeInfo := range initNodes {
+		_, ok := existingNodesByName[nodeInfo.Name]
+		if ok {
+			continue
 		}
-		return true
-	})
+		//TODO create CSI object for node
+		node := corev1.Node{
+			//TypeMeta:   metav1.TypeMeta{
+			//	Kind: "Node",
+			//	APIVersion: "v1",
+			//},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      nodeInfo.Name,
+				Namespace: nodeInfo.Namespace,
+				Labels:    nodeInfo.Labels,
+			},
+			Spec: corev1.NodeSpec{
+				Taints:     nodeInfo.Taints,
+				ProviderID: nodeInfo.ProviderID,
+			},
+			Status: corev1.NodeStatus{
+				Capacity:    nodeInfo.Capacity,
+				Allocatable: nodeInfo.Allocatable,
+			},
+		}
+		nd, err := v.clientSet.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("cannot create node with name %q: %w", nd.Name, err)
+		}
+		err = adjustNode(v.clientSet, &node)
+		if err != nil {
+			return fmt.Errorf("cannot adjust the node with name %q: %w", node.Name, err)
+		}
+	}
 
-	return aggError
+	return nil
 }
 func (v *VirtualCloudProvider) Refresh() error {
 	refreshed, err := v.refreshConfig()
 	if err != nil {
 		return err
+	}
+	if len(v.config.NodeGroups) == 0 {
+		return fmt.Errorf("virtual autoscaler is not initialized")
 	}
 	if refreshed {
 		err = v.reloadVirtualNodeGroups()
@@ -690,12 +777,15 @@ func (v *VirtualCloudProvider) Refresh() error {
 	if len(v.config.NodeGroups) == 0 {
 		return nil
 	}
-
 	err = v.refreshNodes()
 	if err != nil {
 		return err
 	}
-	klog.Infof("completed refresh of virtual cloud provider using config path: %s", v.configPath)
+	if refreshed {
+		klog.V(2).Infof("completed refresh of virtual cloud provider using config path: %s", v.configPath)
+	} else {
+		klog.V(2).Infof("attempted refresh of virtual cloud provider using config path: %s", v.configPath)
+	}
 	return nil
 }
 
@@ -751,6 +841,10 @@ func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
 			},
 		})
 		createdNode, err := v.clientSet.CoreV1().Nodes().Create(ctx, &node, metav1.CreateOptions{})
+		if err != nil {
+			return err
+		}
+		err = adjustNode(v.clientSet, &node)
 		if err != nil {
 			return err
 		}
@@ -846,7 +940,7 @@ func (v *VirtualNodeGroup) buildCoreNodeFromTemplate() (corev1.Node, error) {
 	node.Status = corev1.NodeStatus{
 		Capacity: maps.Clone(v.nodeTemplate.Capacity),
 	}
-	//node.Status.Capacity[corev1.ResourcePods] = resource.MustParse("110") //Fixme must take it dynamically from node object
+	node.Status.Capacity[corev1.ResourcePods] = resource.MustParse("110") //Fixme must take it dynamically from node object
 	//node.Status.Capacity[corev1.ResourceCPU] = v.nodeTemplate.CPU
 	//if v.nodeTemplate.GPU.Cmp(resource.MustParse("0")) != 0 {
 	node.Status.Capacity[gpu.ResourceNvidiaGPU] = v.nodeTemplate.Capacity["gpu"]
@@ -866,7 +960,7 @@ func (v *VirtualNodeGroup) buildCoreNodeFromTemplate() (corev1.Node, error) {
 	//// GenericLabels
 	node.Labels = cloudprovider.JoinStringMaps(node.Labels, buildGenericLabels(&v.nodeTemplate, nodeName))
 	maps.Copy(node.Labels, v.nodeTemplate.Labels)
-	node.Labels[NodeGroupLabel] = v.nonNamespacedName
+	//node.Labels[NodeGroupLabel] = v.nonNamespacedName
 
 	//TODO populate taints from mcd
 	node.Spec.Taints = v.nodeTemplate.Taints

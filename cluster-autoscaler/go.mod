@@ -20,7 +20,7 @@ require (
 	github.com/aws/aws-sdk-go v1.44.241
 	github.com/cenkalti/backoff/v4 v4.2.1
 	github.com/digitalocean/godo v1.27.0
-	github.com/elankath/gardener-scaling-types v0.0.0-20240626113527-88c81904c315
+	github.com/elankath/gardener-scaling-types v0.0.0-20240628111204-5b234faf9f50
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/golang/mock v1.6.0
 	github.com/google/go-cmp v0.6.0
