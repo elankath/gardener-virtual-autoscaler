@@ -641,41 +641,27 @@ func (v *VirtualCloudProvider) reloadVirtualNodeGroups() error {
 	return nil
 }
 
-func adjustNode(clientSet *kubernetes.Clientset, nd *corev1.Node) error {
+func adjustNode(clientSet *kubernetes.Clientset, nodeName string, nodeStatus corev1.NodeStatus) error {
 
-	nd, err := clientSet.CoreV1().Nodes().Get(context.Background(), nd.Name, metav1.GetOptions{})
+	nd, err := clientSet.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("cannot get node with name %q: %w", nd.Name, err)
 	}
 	nd.Spec.Taints = lo.Filter(nd.Spec.Taints, func(item corev1.Taint, index int) bool {
 		return item.Key != "node.kubernetes.io/not-ready"
 	})
-	nodeReadyCondition := corev1.NodeCondition{
-		Type:               corev1.NodeReady,
-		Status:             corev1.ConditionTrue,
-		LastHeartbeatTime:  metav1.Time{Time: time.Now()},
-		LastTransitionTime: metav1.Time{Time: time.Now()},
-		Reason:             "KubeletReady",
-		Message:            "virtual cloud provider marking node as ready",
-	}
-
-	var conditions []corev1.NodeCondition
-	found := false
-	for _, condition := range nd.Status.Conditions {
-		if condition.Type == corev1.NodeReady {
-			conditions = append(conditions, nodeReadyCondition)
-			found = true
-		} else {
-			conditions = append(conditions, condition)
-		}
-	}
-	if !found {
-		conditions = append(conditions, nodeReadyCondition)
-	}
-	nd.Status.Conditions = conditions
 	nd, err = clientSet.CoreV1().Nodes().Update(context.Background(), nd, metav1.UpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("cannot update node with name %q: %w", nd.Name, err)
+	}
+	//nd.Status.Conditions = cloudprovider.BuildReadyConditions()
+	//nd.Status.Phase = corev1.NodeRunning
+	//TODO set the nodeInfo in node status
+	nd.Status = nodeStatus
+	nd.Status.Phase = corev1.NodeRunning
+	nd, err = clientSet.CoreV1().Nodes().UpdateStatus(context.Background(), nd, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("cannot update the status of node with name %q: %w", nd.Name, err)
 	}
 	return nil
 }
@@ -748,11 +734,15 @@ func (v *VirtualCloudProvider) refreshNodes() error {
 				Allocatable: nodeInfo.Allocatable,
 			},
 		}
+		nodeStatus := node.Status
 		nd, err := v.clientSet.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("cannot create node with name %q: %w", nd.Name, err)
 		}
-		err = adjustNode(v.clientSet, &node)
+		node.Status = nodeStatus
+		// fixme : use buildCoreNodefromTemplate to construct node object
+		node.Status.Conditions = cloudprovider.BuildReadyConditions()
+		err = adjustNode(v.clientSet, node.Name, node.Status)
 		if err != nil {
 			return fmt.Errorf("cannot adjust the node with name %q: %w", node.Name, err)
 		}
@@ -840,11 +830,13 @@ func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
 				ErrorInfo: nil,
 			},
 		})
+		nodeStatus := node.Status
 		createdNode, err := v.clientSet.CoreV1().Nodes().Create(ctx, &node, metav1.CreateOptions{})
 		if err != nil {
 			return err
 		}
-		err = adjustNode(v.clientSet, &node)
+
+		err = adjustNode(v.clientSet, node.Name, nodeStatus)
 		if err != nil {
 			return err
 		}
