@@ -517,6 +517,18 @@ func (v *VirtualCloudProvider) getNodeGroupsByPoolKey() map[poolKey]cloudprovide
 	return poolKeyMap
 }
 
+func getZonefromNodeLabels(nodeLabel map[string]string) (string, error) {
+	//TODO do include zone labels from other providers
+	zone, ok := nodeLabel["topology.kubernetes.io/zone"]
+	if ok {
+		return zone, nil
+	}
+	zone, ok = nodeLabel["topology.gke.io/zone"]
+	if ok {
+		return zone, nil
+	}
+	return "", fmt.Errorf("no eligible zone label available for node %q", nodeLabel["kubernetes.io/hostname"])
+}
 func (v *VirtualCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovider.NodeGroup, error) {
 	//ngName, ok := node.Labels[NodeGroupLabel]
 	//if !ok {
@@ -540,9 +552,13 @@ func (v *VirtualCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovide
 		return nil, nil
 	}
 	poolKeyMap := v.getNodeGroupsByPoolKey()
+	zone, err := getZonefromNodeLabels(node.Labels)
+	if err != nil {
+		return nil, fmt.Errorf("cant find VirtualNodeGroup for node with with name %q: %w", node.Name, err)
+	}
 	nodePoolKey := poolKey{
 		poolName: node.Labels["worker.gardener.cloud/pool"],
-		zone:     node.Labels["topology.kubernetes.io/zone"],
+		zone:     zone,
 	}
 	nodeGroup, ok := poolKeyMap[nodePoolKey]
 	if !ok {
