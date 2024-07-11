@@ -624,7 +624,7 @@ func main() {
 	klog.InitFlags(nil)
 
 	leaderElection := defaultLeaderElectionConfiguration()
-	leaderElection.LeaderElect = true
+	leaderElection.LeaderElect = false
 	componentopts.BindLeaderElectionFlags(&leaderElection, pflag.CommandLine)
 
 	featureGate := utilfeature.DefaultMutableFeatureGate

@@ -89,8 +89,8 @@ var AvailableCloudProviders = []string{
 	cloudprovider.VirtualProviderName,
 }
 
-// DefaultCloudProvider is GCE.
-const DefaultCloudProvider = cloudprovider.GceProviderName
+// DefaultCloudProvider is virtual.
+const DefaultCloudProvider = cloudprovider.VirtualProviderName
 
 func buildCloudProvider(opts config.AutoscalingOptions,
 	do cloudprovider.NodeGroupDiscoveryOptions,

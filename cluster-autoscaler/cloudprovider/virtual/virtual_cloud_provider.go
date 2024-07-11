@@ -100,14 +100,16 @@ func BuildVirtual(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisc
 
 	//TODO replace with configmap
 	virtualAutoscalerConfigPath := os.Getenv("VIRTUAL_AUTOSCALER_CONFIG")
-	if virtualAutoscalerConfigPath != "" {
-		cloudProvider, err := InitializeFromVirtualConfig(virtualAutoscalerConfigPath, clientSet, rl)
-		if err != nil {
-			klog.Fatalf("cannot initialize virtual autoscaler from virtual autoscaler config path: %s", err)
-			return nil
-		}
-		return cloudProvider
+	if virtualAutoscalerConfigPath == "" {
+		virtualAutoscalerConfigPath = "/tmp/vas-config.json"
+		klog.Warningf("VIRTUAL_AUTOSCALER_CONFIG not set. Assuming %s", virtualAutoscalerConfigPath)
 	}
+	cloudProvider, err := InitializeFromVirtualConfig(virtualAutoscalerConfigPath, clientSet, rl)
+	if err != nil {
+		klog.Fatalf("cannot initialize virtual autoscaler from virtual autoscaler config path: %s", err)
+		return nil
+	}
+	return cloudProvider
 
 	klog.Fatalf("no configuration neither GARDENER_CLUSTER_INFO nor VIRTUAL_AUTOSCALER_CONFIG is passed")
 	return nil
