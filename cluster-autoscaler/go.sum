@@ -230,6 +230,8 @@ github.com/elankath/gardener-scaling-common v0.0.0-20240724093749-833f9f267cf4 h
 github.com/elankath/gardener-scaling-common v0.0.0-20240724093749-833f9f267cf4/go.mod h1:qpfpq3WPi97vGauiq3cyT5AbC8hfYSLotJiT0gUMszY=
 github.com/elankath/gardener-scaling-common v0.0.0-20240724115227-029eb67a8c9c h1:U869mHqXTjG3cfGL/jTIt+qAAqwamNn52mf07vjBI9U=
 github.com/elankath/gardener-scaling-common v0.0.0-20240724115227-029eb67a8c9c/go.mod h1:qpfpq3WPi97vGauiq3cyT5AbC8hfYSLotJiT0gUMszY=
+github.com/elankath/gardener-scaling-common v0.0.0-20240724121322-39f6fa2564aa h1:YBQali97Y4mY0itjTYLvF9Xf9Vr6Bk8FM+OTGYt+XqI=
+github.com/elankath/gardener-scaling-common v0.0.0-20240724121322-39f6fa2564aa/go.mod h1:qpfpq3WPi97vGauiq3cyT5AbC8hfYSLotJiT0gUMszY=
 github.com/emicklei/go-restful/v3 v3.11.0 h1:rAQeMHw1c7zTmncogyy8VvRZwtkmkZ4FxERmMY4rD+g=
 github.com/emicklei/go-restful/v3 v3.11.0/go.mod h1:6n3XBCmQQb25CM2LCACGz8ukIrRry+4bhvbpWn3mrbc=
 github.com/envoyproxy/go-control-plane v0.9.0/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
