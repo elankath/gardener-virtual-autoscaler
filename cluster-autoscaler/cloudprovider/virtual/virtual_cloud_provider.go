@@ -626,9 +626,6 @@ func (vcp *VirtualCloudProvider) checkAndReloadConfig() (bool, error) {
 		klog.Warningf("Ignoring Old virtual autoscalerConfig at path %q with time %q created before the CA launch time %q", vcp.configPath, lastModifiedTime, vcp.launchTime)
 		return false, nil
 	}
-	if !lastModifiedTime.After(vcp.configLastModifiedTime) {
-		return false, nil
-	}
 	autoscalerConfig, err := loadAutoscalerConfig(vcp.configPath)
 	if err != nil {
 		klog.Errorf("failed to construct the virtual autoscaler autoscalerConfig from file: %s, error: %s", vcp.configPath, err)
@@ -697,6 +694,7 @@ func (vcp *VirtualCloudProvider) synchronizeNodes(ctx context.Context, configNod
 	virtualNodesMap := lo.KeyBy(virtualNodes, func(item corev1.Node) string {
 		return item.Name
 	})
+
 	for _, vn := range virtualNodes {
 		_, ok := snapshotNodeInfosByName[vn.Name]
 		if ok {
@@ -758,6 +756,15 @@ func (vcp *VirtualCloudProvider) synchronizeNodes(ctx context.Context, configNod
 		if err != nil {
 			return fmt.Errorf("synchronizeNodes cannot adjust the node with name %q: %w", node.Name, err)
 		}
+	}
+
+	// Update VirtualNodeGroup.Instances
+	virtualNodes, err = clientutil.ListAllNodes(ctx, vcp.clientSet)
+	if err != nil {
+		return fmt.Errorf("cannot list the nodes in virtual cluster: %w", err)
+	}
+
+	for _, node := range virtualNodes {
 		ng, err := vcp.NodeGroupForNode(&node)
 		if err != nil {
 			return fmt.Errorf("synchronizeNodes can't find NodeGroup for node %q: %w", node.Name, err)
@@ -773,6 +780,7 @@ func (vcp *VirtualCloudProvider) synchronizeNodes(ctx context.Context, configNod
 				ErrorInfo: nil,
 			},
 		}
+		klog.V(3).Infof("synchronizeNodes added instance to VirtualNodeGroup %q", vng.Name)
 		time.AfterFunc(1*time.Second, func() { vng.changeCreatingInstancesToRunning(ctx) })
 	}
 	return nil
@@ -820,20 +828,20 @@ func (v *VirtualNodeGroup) MinSize() int {
 }
 
 func (v *VirtualNodeGroup) TargetSize() (int, error) {
+	klog.V(3).Infof("TargetSize() of %q is currently %d", v.Name, len(v.instances))
 	return len(v.instances), nil
 }
 
 func (v *VirtualNodeGroup) changeCreatingInstancesToRunning(ctx context.Context) {
-	for k, _ := range v.instances {
-		if v.instances[k].Status.State == cloudprovider.InstanceRunning {
+	for nn, _ := range v.instances {
+		if v.instances[nn].Status.State == cloudprovider.InstanceRunning {
 			continue
 		}
-		klog.Infof("changing the instace %s state from creating to running", v.instances[k].Id)
-		v.instances[k].Status.State = cloudprovider.InstanceRunning
-		nodeName := v.instances[k].Id
-		node, err := v.clientSet.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		klog.Infof("changing the instace %s state from creating to running", v.instances[nn].Id)
+		v.instances[nn].Status.State = cloudprovider.InstanceRunning
+		node, err := v.clientSet.CoreV1().Nodes().Get(ctx, nn, metav1.GetOptions{})
 		if err != nil {
-			klog.Errorf("cannot get the node object for the corresponding instance: %s", nodeName)
+			klog.Errorf("changeCreatingInstancesToRunning cannot get the node object for the corresponding instance: %s", nn)
 			return
 		}
 		node.Spec.Taints = slices.DeleteFunc(node.Spec.Taints, func(taint corev1.Taint) bool {
@@ -841,10 +849,10 @@ func (v *VirtualNodeGroup) changeCreatingInstancesToRunning(ctx context.Context)
 		})
 		updatedNode, err := v.clientSet.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 		if err != nil {
-			klog.Errorf("cannot update the node for corresponding instance: %s", nodeName)
+			klog.Errorf("changeCreatingInstancesToRunning cannot update the node for corresponding instance: %s", nn)
 			return
 		}
-		klog.Infof("removed the not ready taint from node: %s", updatedNode.Name)
+		klog.Infof("changeCreatingInstancesToRunning removed the not ready taint from node: %s", updatedNode.Name)
 	}
 }
 
@@ -852,10 +860,11 @@ func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
 	ctx := context.Background()
 	//TODO add flags for simulating provider errors ex : ResourceExhaustion
 	if len(v.instances) >= v.MaxSize() {
-		klog.Warningf("VirtualNodeGroup.IncreseSize SPURIOUSLY called by CA core for %q with delta %d", v.Name, delta)
+		klog.Warningf("IncreseSize SPURIOUSLY called by CA core for %q with delta %d", v.Name, delta)
 		return nil
 	}
-	klog.V(3).Infof("VirtualNodeGroup.IncreseSize called for %q with delta %d", v.Name, delta)
+	// double check against Nodes of virtual cluster.
+	klog.V(3).Infof("IncreseSize called for %q with delta %d", v.Name, delta)
 	for i := 0; i < delta; i++ {
 		node, err := v.buildCoreNodeFromTemplate()
 		if err != nil {
@@ -873,12 +882,12 @@ func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
 		if err != nil {
 			return err
 		}
-		klog.V(3).Infof("VirtualNodeGroup.IncreseSize created node with name %q", node.Name)
+		klog.V(3).Infof("IncreseSize created node with name %q", node.Name)
 		err = adjustNode(v.clientSet, node.Name, nodeStatus)
 		if err != nil {
 			return err
 		}
-		klog.Infof("created a new node with name: %s", createdNode.Name)
+		klog.Infof("IncreseSize created a new node with name: %s", createdNode.Name)
 	}
 	time.AfterFunc(3*time.Second, func() { v.changeCreatingInstancesToRunning(ctx) })
 	return nil
@@ -891,7 +900,7 @@ func (v *VirtualNodeGroup) AtomicIncreaseSize(delta int) error {
 func (v *VirtualNodeGroup) DeleteNodes(nodes []*corev1.Node) error {
 	ctx := context.Background()
 	for _, node := range nodes {
-		klog.V(3).Infof("VirtualNodeGroup.DeleteNodes is deleting node with name %q", node.Name)
+		klog.V(3).Infof("DeleteNodes is deleting node with name %q", node.Name)
 		err := v.clientSet.CoreV1().Nodes().Delete(ctx, node.Name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return err
@@ -902,7 +911,7 @@ func (v *VirtualNodeGroup) DeleteNodes(nodes []*corev1.Node) error {
 }
 
 func (v *VirtualNodeGroup) DecreaseTargetSize(delta int) error {
-	klog.V(3).Infof("VirtualNodeGroup.DecreaseTargetSize called for ng %q and delta %d", v.Name, delta)
+	klog.V(3).Infof("DecreaseTargetSize called for ng %q and delta %d", v.Name, delta)
 	ctx := context.Background()
 	nodes, err := v.clientSet.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
