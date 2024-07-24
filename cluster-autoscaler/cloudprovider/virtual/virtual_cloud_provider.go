@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/elankath/gardener-scaling-common"
+	"github.com/elankath/gardener-scaling-common/clientutil"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,10 +38,11 @@ type VirtualNodeGroup struct {
 	gsc.NodeGroupInfo
 	nonNamespacedName string
 	nodeTemplate      gsc.NodeTemplate
-	instances         []cloudprovider.Instance
+	instances         map[string]cloudprovider.Instance
 	clientSet         *kubernetes.Clientset
 }
 
+var _ cloudprovider.CloudProvider = (*VirtualCloudProvider)(nil)
 var _ cloudprovider.NodeGroup = (*VirtualNodeGroup)(nil)
 
 const GPULabel = "virtual/gpu"
@@ -52,7 +54,7 @@ type VirtualCloudProvider struct {
 	configLastModifiedTime time.Time
 	resourceLimiter        *cloudprovider.ResourceLimiter
 	clientSet              *kubernetes.Clientset
-	virtualNodeGroups      sync.Map
+	virtualNodeGroups      map[string]*VirtualNodeGroup
 }
 
 func BuildVirtual(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
@@ -133,7 +135,7 @@ func buildVirtualNodeGroups(clientSet *kubernetes.Clientset, clusterInfo *gsc.Au
 			NodeGroupInfo:     ng,
 			nonNamespacedName: names[1],
 			nodeTemplate:      gsc.NodeTemplate{},
-			instances:         nil,
+			instances:         make(map[string]cloudprovider.Instance),
 			clientSet:         clientSet,
 		}
 		//populateNodeTemplateTaints(nodeTemplates,mcdData)
@@ -152,8 +154,11 @@ func InitializeFromGardenerCluster(clusterInfoPath string, clientSet *kubernetes
 		klog.Fatalf("cannot build the virtual cloud provider: %s", err.Error())
 	}
 	virtualNodeGroups, err := buildVirtualNodeGroups(clientSet, &clusterInfo)
+	if err != nil {
+		return nil, err
+	}
 	return &VirtualCloudProvider{
-		virtualNodeGroups: AsSyncMap(virtualNodeGroups),
+		virtualNodeGroups: virtualNodeGroups,
 		config:            &clusterInfo,
 		resourceLimiter:   rl,
 		clientSet:         clientSet,
@@ -472,19 +477,18 @@ func populateNodeTemplates(nodeGroups map[string]*VirtualNodeGroup, nodeTemplate
 	return nil
 }
 
-func (v *VirtualCloudProvider) Name() string {
+func (vcp *VirtualCloudProvider) Name() string {
 	return cloudprovider.VirtualProviderName
 }
 
-func (v *VirtualCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
-	result := make([]cloudprovider.NodeGroup, len(v.config.NodeGroups))
-	counter := 0
-	v.virtualNodeGroups.Range(func(key, value any) bool {
-		result[counter] = value.(*VirtualNodeGroup)
-		counter++
-		return true
-	})
-	return result
+func (vcp *VirtualCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
+	nodeGroups := make([]cloudprovider.NodeGroup, len(vcp.virtualNodeGroups))
+	count := 0
+	for _, v := range vcp.virtualNodeGroups {
+		nodeGroups[count] = v
+		count++
+	}
+	return nodeGroups
 }
 
 type poolKey struct {
@@ -492,17 +496,15 @@ type poolKey struct {
 	zone     string
 }
 
-func (v *VirtualCloudProvider) getNodeGroupsByPoolKey() map[poolKey]cloudprovider.NodeGroup {
-	poolKeyMap := make(map[poolKey]cloudprovider.NodeGroup)
-	v.virtualNodeGroups.Range(func(key, value any) bool {
-		virtualNodeGroup := value.(*VirtualNodeGroup)
-		poolKey := poolKey{
-			poolName: virtualNodeGroup.PoolName,
-			zone:     virtualNodeGroup.Zone,
+func (vcp *VirtualCloudProvider) getNodeGroupsByPoolKey() map[poolKey]*VirtualNodeGroup {
+	poolKeyMap := make(map[poolKey]*VirtualNodeGroup)
+	for _, vng := range vcp.virtualNodeGroups {
+		pk := poolKey{
+			poolName: vng.PoolName,
+			zone:     vng.Zone,
 		}
-		poolKeyMap[poolKey] = virtualNodeGroup
-		return true
-	})
+		poolKeyMap[pk] = vng
+	}
 	return poolKeyMap
 }
 
@@ -518,14 +520,14 @@ func getZonefromNodeLabels(nodeLabel map[string]string) (string, error) {
 	}
 	return "", fmt.Errorf("no eligible zone label available for node %q", nodeLabel["kubernetes.io/hostname"])
 }
-func (v *VirtualCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovider.NodeGroup, error) {
-	if len(v.config.NodeGroups) == 0 {
+func (vcp *VirtualCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovider.NodeGroup, error) {
+	if len(vcp.config.NodeGroups) == 0 {
 		klog.Warning("virtual autoscaler has not been initialized with nodes")
 		return nil, nil
 	}
 	ctx := context.Background()
-	poolKeyMap := v.getNodeGroupsByPoolKey()
-	nodeInCluster, err := v.clientSet.CoreV1().Nodes().Get(ctx, node.Name, metav1.GetOptions{})
+	poolKeyMap := vcp.getNodeGroupsByPoolKey()
+	nodeInCluster, err := vcp.clientSet.CoreV1().Nodes().Get(ctx, node.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("can't find VirtualNodeGroup for node with name %q: %w", node.Name, err)
 	}
@@ -551,39 +553,39 @@ func (v *VirtualCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovide
 	return nodeGroup, nil
 }
 
-func (v *VirtualCloudProvider) HasInstance(node *corev1.Node) (bool, error) {
+func (vcp *VirtualCloudProvider) HasInstance(node *corev1.Node) (bool, error) {
 	return true, cloudprovider.ErrNotImplemented
 }
 
-func (v *VirtualCloudProvider) Pricing() (cloudprovider.PricingModel, errors.AutoscalerError) {
+func (vcp *VirtualCloudProvider) Pricing() (cloudprovider.PricingModel, errors.AutoscalerError) {
 	return nil, cloudprovider.ErrNotImplemented
 }
 
-func (v *VirtualCloudProvider) GetAvailableMachineTypes() ([]string, error) {
+func (vcp *VirtualCloudProvider) GetAvailableMachineTypes() ([]string, error) {
 	return []string{}, nil
 }
 
-func (v *VirtualCloudProvider) NewNodeGroup(machineType string, labels map[string]string, systemLabels map[string]string, taints []corev1.Taint, extraResources map[string]resource.Quantity) (cloudprovider.NodeGroup, error) {
+func (vcp *VirtualCloudProvider) NewNodeGroup(machineType string, labels map[string]string, systemLabels map[string]string, taints []corev1.Taint, extraResources map[string]resource.Quantity) (cloudprovider.NodeGroup, error) {
 	return nil, cloudprovider.ErrNotImplemented
 }
 
-func (v *VirtualCloudProvider) GetResourceLimiter() (*cloudprovider.ResourceLimiter, error) {
-	return v.resourceLimiter, nil
+func (vcp *VirtualCloudProvider) GetResourceLimiter() (*cloudprovider.ResourceLimiter, error) {
+	return vcp.resourceLimiter, nil
 }
 
-func (v *VirtualCloudProvider) GPULabel() string {
+func (vcp *VirtualCloudProvider) GPULabel() string {
 	return GPULabel
 }
 
-func (v *VirtualCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
+func (vcp *VirtualCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
 	return nil
 }
 
-func (v *VirtualCloudProvider) GetNodeGpuConfig(node *corev1.Node) *cloudprovider.GpuConfig {
+func (vcp *VirtualCloudProvider) GetNodeGpuConfig(node *corev1.Node) *cloudprovider.GpuConfig {
 	return nil
 }
 
-func (v *VirtualCloudProvider) Cleanup() error {
+func (vcp *VirtualCloudProvider) Cleanup() error {
 	return nil
 }
 
@@ -611,41 +613,41 @@ func loadAutoscalerConfig(filePath string) (config gsc.AutoscalerConfig, err err
 	return
 }
 
-func (v *VirtualCloudProvider) checkAndReloadConfig() (bool, error) {
-	exist, lastModifiedTime, err := checkAndGetFileLastModifiedTime(v.configPath)
+func (vcp *VirtualCloudProvider) checkAndReloadConfig() (bool, error) {
+	exist, lastModifiedTime, err := checkAndGetFileLastModifiedTime(vcp.configPath)
 	if err != nil {
-		return false, fmt.Errorf("error looking up the virtual autoscaler autoscalerConfig at path: %s, error: %s", v.configPath, err)
+		return false, fmt.Errorf("error looking up the virtual autoscaler autoscalerConfig at path: %s, error: %s", vcp.configPath, err)
 	}
 	if !exist {
-		klog.Warningf("virtual autoscaler autoscalerConfig is still missing at path: %s", v.configPath)
+		klog.Warningf("virtual autoscaler autoscalerConfig is still missing at path: %s", vcp.configPath)
 		return false, nil
 	}
-	if v.launchTime.After(lastModifiedTime) {
-		klog.Warningf("Ignoring Old virtual autoscalerConfig at path %q with time %q created before the CA launch time %q", v.configPath, lastModifiedTime, v.launchTime)
+	if vcp.launchTime.After(lastModifiedTime) {
+		klog.Warningf("Ignoring Old virtual autoscalerConfig at path %q with time %q created before the CA launch time %q", vcp.configPath, lastModifiedTime, vcp.launchTime)
 		return false, nil
 	}
-	if !lastModifiedTime.After(v.configLastModifiedTime) {
+	if !lastModifiedTime.After(vcp.configLastModifiedTime) {
 		return false, nil
 	}
-	autoscalerConfig, err := loadAutoscalerConfig(v.configPath)
+	autoscalerConfig, err := loadAutoscalerConfig(vcp.configPath)
 	if err != nil {
-		klog.Errorf("failed to construct the virtual autoscaler autoscalerConfig from file: %s, error: %s", v.configPath, err)
+		klog.Errorf("failed to construct the virtual autoscaler autoscalerConfig from file: %s, error: %s", vcp.configPath, err)
 		return false, err
 	}
-	if v.config.Hash != autoscalerConfig.Hash {
-		v.config = &autoscalerConfig
-		v.configLastModifiedTime = lastModifiedTime
+	if vcp.config.Hash != autoscalerConfig.Hash {
+		vcp.config = &autoscalerConfig
+		vcp.configLastModifiedTime = lastModifiedTime
 		return true, nil
 	}
 	return false, nil
 }
 
-func (v *VirtualCloudProvider) reloadVirtualNodeGroups() error {
-	virtualNodeGroups, err := buildVirtualNodeGroups(v.clientSet, v.config)
+func (vcp *VirtualCloudProvider) reloadVirtualNodeGroups() error {
+	virtualNodeGroups, err := buildVirtualNodeGroups(vcp.clientSet, vcp.config)
 	if err != nil {
 		return err
 	}
-	v.virtualNodeGroups = AsSyncMap(virtualNodeGroups)
+	vcp.virtualNodeGroups = virtualNodeGroups
 	return nil
 }
 
@@ -674,38 +676,40 @@ func adjustNode(clientSet *kubernetes.Clientset, nodeName string, nodeStatus cor
 	return nil
 }
 
-func (v *VirtualCloudProvider) refreshNodes() error {
-	configNodeInfos := v.config.ExistingNodes
+func (vcp *VirtualCloudProvider) refreshNodes() error {
+	configNodeInfos := vcp.config.ExistingNodes
 	ctx := context.Background()
-	err := synchronizeNodes(ctx, v.clientSet, configNodeInfos)
+	err := vcp.synchronizeNodes(ctx, configNodeInfos)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func synchronizeNodes(ctx context.Context, clientSet *kubernetes.Clientset, configNodeInfos []gsc.NodeInfo) error {
-	virtualNodeList, err := clientSet.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("cannot list the nodes in virtual cluster: %w", err)
-	}
-	virtualNodesMap := lo.KeyBy(virtualNodeList.Items, func(item corev1.Node) string {
-		return item.Name
-	})
+func (vcp *VirtualCloudProvider) synchronizeNodes(ctx context.Context, configNodeInfos []gsc.NodeInfo) error {
 	snapshotNodeInfosByName := lo.Associate(configNodeInfos, func(item gsc.NodeInfo) (string, struct{}) {
 		return item.Name, struct{}{}
 	})
-	for _, vnode := range virtualNodeList.Items {
-		_, ok := snapshotNodeInfosByName[vnode.Name]
+	virtualNodes, err := clientutil.ListAllNodes(ctx, vcp.clientSet)
+	if err != nil {
+		return fmt.Errorf("cannot list the nodes in virtual cluster: %w", err)
+	}
+	virtualNodesMap := lo.KeyBy(virtualNodes, func(item corev1.Node) string {
+		return item.Name
+	})
+	for _, vn := range virtualNodes {
+		_, ok := snapshotNodeInfosByName[vn.Name]
 		if ok {
 			continue
 		}
-		err = clientSet.CoreV1().Nodes().Delete(ctx, vnode.Name, metav1.DeleteOptions{})
-		if err != nil {
-			return fmt.Errorf("cannot delete the virtual node %q: %w", vnode.Name, err)
+		err := vcp.clientSet.CoreV1().Nodes().Delete(ctx, vn.Name, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("cannot delete the virtual node %q: %w", vn.Name, err)
 		}
-		delete(virtualNodesMap, vnode.Name)
+		//delete(virtualNodesMap, vn.Name)
+		klog.V(3).Infof("synchronizeNodes deleted the virtual node %q", vn.Name)
 	}
+
 	for _, nodeInfo := range configNodeInfos {
 		oldVNode, exists := virtualNodesMap[nodeInfo.Name]
 		var sameLabels, sameTaints bool
@@ -733,16 +737,16 @@ func synchronizeNodes(ctx context.Context, clientSet *kubernetes.Clientset, conf
 		}
 		nodeStatus := node.Status
 		if !exists {
-			_, err = clientSet.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
+			_, err = vcp.clientSet.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
 			if apierrors.IsAlreadyExists(err) {
-				klog.Warningf("node already exists. updating node %q", node.Name)
-				_, err = clientSet.CoreV1().Nodes().Update(context.Background(), &node, metav1.UpdateOptions{})
+				klog.Warningf("synchronizeNodes: node already exists. updating node %q", node.Name)
+				_, err = vcp.clientSet.CoreV1().Nodes().Update(context.Background(), &node, metav1.UpdateOptions{})
 			}
 			if err == nil {
 				klog.V(3).Infof("synchronizeNodes created node %q", node.Name)
 			}
 		} else {
-			_, err = clientSet.CoreV1().Nodes().Update(context.Background(), &node, metav1.UpdateOptions{})
+			_, err = vcp.clientSet.CoreV1().Nodes().Update(context.Background(), &node, metav1.UpdateOptions{})
 			klog.V(3).Infof("synchronizeNodes updated node %q", node.Name)
 		}
 		if err != nil {
@@ -750,41 +754,57 @@ func synchronizeNodes(ctx context.Context, clientSet *kubernetes.Clientset, conf
 		}
 		node.Status = nodeStatus
 		node.Status.Conditions = cloudprovider.BuildReadyConditions()
-		err = adjustNode(clientSet, node.Name, node.Status)
+		err = adjustNode(vcp.clientSet, node.Name, node.Status)
 		if err != nil {
 			return fmt.Errorf("synchronizeNodes cannot adjust the node with name %q: %w", node.Name, err)
 		}
+		ng, err := vcp.NodeGroupForNode(&node)
+		if err != nil {
+			return fmt.Errorf("synchronizeNodes can't find NodeGroup for node %q: %w", node.Name, err)
+		}
+		vng, ok := vcp.virtualNodeGroups[ng.Id()]
+		if !ok {
+			return fmt.Errorf("synchronizeNodes can't find VirtualNodeGroup with name: %w", ng.Id())
+		}
+		vng.instances[node.Name] = cloudprovider.Instance{
+			Id: node.Name,
+			Status: &cloudprovider.InstanceStatus{
+				State:     cloudprovider.InstanceCreating,
+				ErrorInfo: nil,
+			},
+		}
+		time.AfterFunc(1*time.Second, func() { vng.changeCreatingInstancesToRunning(ctx) })
 	}
 	return nil
 }
 
-func (v *VirtualCloudProvider) Refresh() error {
-	configReloaded, err := v.checkAndReloadConfig()
+func (vcp *VirtualCloudProvider) Refresh() error {
+	configReloaded, err := vcp.checkAndReloadConfig()
 	if err != nil {
 		return err
 	}
-	if len(v.config.NodeGroups) == 0 {
+	if len(vcp.config.NodeGroups) == 0 {
 		return fmt.Errorf("virtual autoscaler is not initialized")
 	}
 	if configReloaded {
-		err = v.reloadVirtualNodeGroups()
+		err = vcp.reloadVirtualNodeGroups()
 		if err != nil {
 			return err
 		}
 	}
-	if len(v.config.NodeGroups) == 0 {
+	if len(vcp.config.NodeGroups) == 0 {
 		return nil
 	}
 	if configReloaded {
-		err = v.refreshNodes()
+		err = vcp.refreshNodes()
 	}
 	if err != nil {
 		return err
 	}
 	if configReloaded {
-		klog.V(2).Infof("completed config reload of virtual cloud provider from path: %s", v.configPath)
+		klog.V(2).Infof("completed config reload of virtual cloud provider from path: %s", vcp.configPath)
 	} else {
-		klog.V(2).Infof("unchanged config for virtual cloud provider at path: %s", v.configPath)
+		klog.V(2).Infof("unchanged config for virtual cloud provider at path: %s", vcp.configPath)
 	}
 	return nil
 }
@@ -800,14 +820,17 @@ func (v *VirtualNodeGroup) MinSize() int {
 }
 
 func (v *VirtualNodeGroup) TargetSize() (int, error) {
-	return v.NodeGroupInfo.TargetSize, nil
+	return len(v.instances), nil
 }
 
 func (v *VirtualNodeGroup) changeCreatingInstancesToRunning(ctx context.Context) {
-	for i, _ := range v.instances {
-		klog.Infof("changing the instace %s state from creating to running", v.instances[i].Id)
-		v.instances[i].Status.State = cloudprovider.InstanceRunning
-		nodeName := v.instances[i].Id
+	for k, _ := range v.instances {
+		if v.instances[k].Status.State == cloudprovider.InstanceRunning {
+			continue
+		}
+		klog.Infof("changing the instace %s state from creating to running", v.instances[k].Id)
+		v.instances[k].Status.State = cloudprovider.InstanceRunning
+		nodeName := v.instances[k].Id
 		node, err := v.clientSet.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
 			klog.Errorf("cannot get the node object for the corresponding instance: %s", nodeName)
@@ -838,13 +861,13 @@ func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
 		if err != nil {
 			return err
 		}
-		v.instances = append(v.instances, cloudprovider.Instance{
+		v.instances[node.Name] = cloudprovider.Instance{
 			Id: node.Name,
 			Status: &cloudprovider.InstanceStatus{
 				State:     cloudprovider.InstanceCreating,
 				ErrorInfo: nil,
 			},
-		})
+		}
 		nodeStatus := node.Status
 		createdNode, err := v.clientSet.CoreV1().Nodes().Create(ctx, &node, metav1.CreateOptions{})
 		if err != nil {
@@ -857,7 +880,7 @@ func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
 		}
 		klog.Infof("created a new node with name: %s", createdNode.Name)
 	}
-	time.AfterFunc(5*time.Second, func() { v.changeCreatingInstancesToRunning(ctx) })
+	time.AfterFunc(3*time.Second, func() { v.changeCreatingInstancesToRunning(ctx) })
 	return nil
 }
 
@@ -870,9 +893,10 @@ func (v *VirtualNodeGroup) DeleteNodes(nodes []*corev1.Node) error {
 	for _, node := range nodes {
 		klog.V(3).Infof("VirtualNodeGroup.DeleteNodes is deleting node with name %q", node.Name)
 		err := v.clientSet.CoreV1().Nodes().Delete(ctx, node.Name, metav1.DeleteOptions{})
-		if err != nil {
+		if err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
+		delete(v.instances, node.Name)
 	}
 	return nil
 }
@@ -910,7 +934,7 @@ func (v *VirtualNodeGroup) Debug() string {
 }
 
 func (v *VirtualNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
-	return v.instances, nil
+	return lo.Values(v.instances), nil
 }
 
 func buildGenericLabels(template *gsc.NodeTemplate, nodeName string) map[string]string {
