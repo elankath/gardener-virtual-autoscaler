@@ -412,34 +412,34 @@ func (csr *ClusterStateRegistry) IsClusterHealthy() bool {
 
 // IsNodeGroupHealthy returns true if the node group health is within the acceptable limits
 func (csr *ClusterStateRegistry) IsNodeGroupHealthy(nodeGroupName string) bool {
-	acceptable, found := csr.acceptableRanges[nodeGroupName]
-	if !found {
-		klog.Warningf("Failed to find acceptable ranges for %v", nodeGroupName)
-		return false
-	}
-
-	readiness, found := csr.perNodeGroupReadiness[nodeGroupName]
-	if !found {
-		// No nodes but target == 0 or just scaling up.
-		if acceptable.CurrentTarget == 0 || (acceptable.MinNodes == 0 && acceptable.CurrentTarget > 0) {
-			return true
-		}
-		klog.Warningf("Failed to find readiness information for %v", nodeGroupName)
-		return false
-	}
-
-	unjustifiedUnready := 0
-	// Too few nodes, something is missing. Below the expected node count.
-	if len(readiness.Ready) < acceptable.MinNodes {
-		unjustifiedUnready += acceptable.MinNodes - len(readiness.Ready)
-	}
-	// TODO: verify against max nodes as well.
-	if unjustifiedUnready > csr.config.OkTotalUnreadyCount &&
-		float64(unjustifiedUnready) > csr.config.MaxTotalUnreadyPercentage/100.0*
-			float64(len(readiness.Ready)+len(readiness.Unready)+len(readiness.NotStarted)) {
-		return false
-	}
-
+	//acceptable, found := csr.acceptableRanges[nodeGroupName]
+	//if !found {
+	//	klog.Warningf("Failed to find acceptable ranges for %v", nodeGroupName)
+	//	return false
+	//}
+	//
+	//readiness, found := csr.perNodeGroupReadiness[nodeGroupName]
+	//if !found {
+	//	// No nodes but target == 0 or just scaling up.
+	//	if acceptable.CurrentTarget == 0 || (acceptable.MinNodes == 0 && acceptable.CurrentTarget > 0) {
+	//		return true
+	//	}
+	//	klog.Warningf("Failed to find readiness information for %v", nodeGroupName)
+	//	return false
+	//}
+	//
+	//unjustifiedUnready := 0
+	//// Too few nodes, something is missing. Below the expected node count.
+	//if len(readiness.Ready) < acceptable.MinNodes {
+	//	unjustifiedUnready += acceptable.MinNodes - len(readiness.Ready)
+	//}
+	//// TODO: verify against max nodes as well.
+	//if unjustifiedUnready > csr.config.OkTotalUnreadyCount &&
+	//	float64(unjustifiedUnready) > csr.config.MaxTotalUnreadyPercentage/100.0*
+	//		float64(len(readiness.Ready)+len(readiness.Unready)+len(readiness.NotStarted)) {
+	//	return false
+	//}
+	//
 	return true
 }
 
