@@ -46,6 +46,7 @@ var _ cloudprovider.NodeGroup = (*VirtualNodeGroup)(nil)
 const GPULabel = "virtual/gpu"
 
 type VirtualCloudProvider struct {
+	launchTime             time.Time
 	config                 *gsc.AutoscalerConfig
 	configPath             string
 	configLastModifiedTime time.Time
@@ -110,6 +111,7 @@ func AsSyncMap(mp map[string]*VirtualNodeGroup) (sMap sync.Map) {
 
 func InitializeFromVirtualConfig(virtualAutoscalerConfigPath string, clientSet *kubernetes.Clientset, rl *cloudprovider.ResourceLimiter) (*VirtualCloudProvider, error) {
 	return &VirtualCloudProvider{
+		launchTime: time.Now().UTC(),
 		config: &gsc.AutoscalerConfig{
 			NodeTemplates: make(map[string]gsc.NodeTemplate),
 			NodeGroups:    make(map[string]gsc.NodeGroupInfo),
@@ -623,6 +625,10 @@ func (v *VirtualCloudProvider) checkAndReloadConfig() (bool, error) {
 		klog.Warningf("virtual autoscaler autoScalerConfig is still missing at path: %s", v.configPath)
 		return false, nil
 	}
+	if v.launchTime.After(lastModifiedTime) {
+		klog.Warningf("Ignoring Old virtual autoScalerConfig at path %q with time %q created before the CA launch time %q", v.configPath, lastModifiedTime, v.launchTime)
+		return false, nil
+	}
 	if !lastModifiedTime.After(v.configLastModifiedTime) {
 		return false, nil
 	}
@@ -631,8 +637,12 @@ func (v *VirtualCloudProvider) checkAndReloadConfig() (bool, error) {
 		klog.Errorf("failed to construct the virtual autoscaler autoScalerConfig from file: %s, error: %s", v.configPath, err)
 		return false, err
 	}
-	v.config = &autoScalerConfig
-	return true, nil
+	if v.config.Hash != autoScalerConfig.Hash {
+		v.config = &autoScalerConfig
+		v.configLastModifiedTime = lastModifiedTime
+		return true, nil
+	}
+	return false, nil
 }
 
 func (v *VirtualCloudProvider) reloadVirtualNodeGroups() error {
@@ -734,20 +744,20 @@ func synchronizeNodes(ctx context.Context, clientSet *kubernetes.Clientset, conf
 				_, err = clientSet.CoreV1().Nodes().Update(context.Background(), &node, metav1.UpdateOptions{})
 			}
 			if err == nil {
-				klog.Infof("created node %q", node.Name)
+				klog.V(3).Infof("synchronizeNodes created node %q", node.Name)
 			}
 		} else {
-			klog.Infof("updating node %q", node.Name)
 			_, err = clientSet.CoreV1().Nodes().Update(context.Background(), &node, metav1.UpdateOptions{})
+			klog.V(3).Infof("synchronizeNodes updated node %q", node.Name)
 		}
 		if err != nil {
-			return fmt.Errorf("cannot create/update node with name %q: %w", node.Name, err)
+			return fmt.Errorf("synchronizeNodes cannot create/update node with name %q: %w", node.Name, err)
 		}
 		node.Status = nodeStatus
 		node.Status.Conditions = cloudprovider.BuildReadyConditions()
 		err = adjustNode(clientSet, node.Name, node.Status)
 		if err != nil {
-			return fmt.Errorf("cannot adjust the node with name %q: %w", node.Name, err)
+			return fmt.Errorf("synchronizeNodes cannot adjust the node with name %q: %w", node.Name, err)
 		}
 	}
 	return nil
@@ -821,6 +831,7 @@ func (v *VirtualNodeGroup) changeCreatingInstancesToRunning(ctx context.Context)
 }
 
 func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
+	klog.V(3).Infof("VirtualNodeGroup.IncreseSize called for %q with delta %d", v.Name, delta)
 	ctx := context.Background()
 	//TODO add flags for simulating provider errors ex : ResourceExhaustion
 	for i := 0; i < delta; i++ {
@@ -840,14 +851,14 @@ func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
 		if err != nil {
 			return err
 		}
-
+		klog.V(3).Infof("VirtualNodeGroup.IncreseSize created node with name %q", node.Name)
 		err = adjustNode(v.clientSet, node.Name, nodeStatus)
 		if err != nil {
 			return err
 		}
 		klog.Infof("created a new node with name: %s", createdNode.Name)
 	}
-	time.AfterFunc(1*time.Second, func() { v.changeCreatingInstancesToRunning(ctx) })
+	time.AfterFunc(5*time.Second, func() { v.changeCreatingInstancesToRunning(ctx) })
 	return nil
 }
 
@@ -858,6 +869,7 @@ func (v *VirtualNodeGroup) AtomicIncreaseSize(delta int) error {
 func (v *VirtualNodeGroup) DeleteNodes(nodes []*corev1.Node) error {
 	ctx := context.Background()
 	for _, node := range nodes {
+		klog.V(3).Infof("VirtualNodeGroup.DeleteNodes is deleting node with name %q", node.Name)
 		err := v.clientSet.CoreV1().Nodes().Delete(ctx, node.Name, metav1.DeleteOptions{})
 		if err != nil {
 			return err
@@ -867,13 +879,14 @@ func (v *VirtualNodeGroup) DeleteNodes(nodes []*corev1.Node) error {
 }
 
 func (v *VirtualNodeGroup) DecreaseTargetSize(delta int) error {
+	klog.V(3).Infof("VirtualNodeGroup.DecreaseTargetSize called for ng %q and delta %d", v.Name, delta)
 	ctx := context.Background()
 	nodes, err := v.clientSet.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 	if delta > len(nodes.Items) {
-		return fmt.Errorf("nodes to be deleted are greater than current number of nodes.")
+		return fmt.Errorf("nodes to be deleted are greater than current number of nodes")
 	}
 	pods, err := v.clientSet.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	podsToNodesMap := lo.GroupBy(pods.Items, func(pod corev1.Pod) string {
