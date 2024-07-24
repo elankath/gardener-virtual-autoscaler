@@ -76,19 +76,6 @@ func BuildVirtual(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisc
 	}
 
 	clusterInfoPath := os.Getenv("GARDENER_CLUSTER_INFO")
-	/*if clusterInfoPath == "" {
-		klog.Infof("no GARDENER_CLUSTER_INFO passed, operating in zero mode")
-		return &VirtualCloudProvider{
-			clusterInfo: &gsc.AutoScalerConfig{
-				NodeTemplates: make(map[string]gsc.NodeTemplate),
-				NodeGroups:    make(map[string]gsc.NodeGroupInfo),
-				WorkerPools:   nil,
-			},
-			virtualNodeGroups: make(map[string]*VirtualNodeGroup),
-			resourceLimiter:   rl,
-			clientSet:         clientSet,
-		}
-	}*/
 
 	if clusterInfoPath != "" {
 		cloudProvider, err := InitializeFromGardenerCluster(clusterInfoPath, clientSet, rl)
