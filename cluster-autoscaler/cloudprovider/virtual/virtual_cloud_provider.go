@@ -111,7 +111,7 @@ func AsSyncMap(mp map[string]*VirtualNodeGroup) (sMap sync.Map) {
 
 func InitializeFromVirtualConfig(virtualAutoscalerConfigPath string, clientSet *kubernetes.Clientset, rl *cloudprovider.ResourceLimiter) (*VirtualCloudProvider, error) {
 	return &VirtualCloudProvider{
-		launchTime: time.Now().UTC(),
+		launchTime: time.Now(),
 		config: &gsc.AutoscalerConfig{
 			NodeTemplates: make(map[string]gsc.NodeTemplate),
 			NodeGroups:    make(map[string]gsc.NodeGroupInfo),
@@ -519,34 +519,25 @@ func getZonefromNodeLabels(nodeLabel map[string]string) (string, error) {
 	return "", fmt.Errorf("no eligible zone label available for node %q", nodeLabel["kubernetes.io/hostname"])
 }
 func (v *VirtualCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovider.NodeGroup, error) {
-	//ngName, ok := node.Labels[NodeGroupLabel]
-	//if !ok {
-	//	return nil, fmt.Errorf("cant find %q label on node %q", NodeGroupLabel, node.Name)
-	//}
-	//var virtualNodeGroup *VirtualNodeGroup
-	//v.virtualNodeGroups.Range(func(key, value any) bool {
-	//	vng := value.(*VirtualNodeGroup)
-	//	if vng.nonNamespacedName == ngName {
-	//		virtualNodeGroup = vng
-	//		return false
-	//	}
-	//	return true
-	//})
-	//if virtualNodeGroup != nil {
-	//	return virtualNodeGroup, nil
-	//}
-	//return nil, fmt.Errorf("cant find VirtualNodeGroup with name %q", ngName)
 	if len(v.config.NodeGroups) == 0 {
 		klog.Warning("virtual autoscaler has not been initialized with nodes")
 		return nil, nil
 	}
+	ctx := context.Background()
 	poolKeyMap := v.getNodeGroupsByPoolKey()
-	zone, err := getZonefromNodeLabels(node.Labels)
+	nodeInCluster, err := v.clientSet.CoreV1().Nodes().Get(ctx, node.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("can't find VirtualNodeGroup for node with name %q: %w", node.Name, err)
+	}
+	nodeLabels := node.Labels
+	maps.Copy(nodeLabels, nodeInCluster.Labels)
+
+	zone, err := getZonefromNodeLabels(nodeLabels)
 	if err != nil {
 		return nil, fmt.Errorf("cant find VirtualNodeGroup for node with with name %q: %w", node.Name, err)
 	}
 	nodePoolKey := poolKey{
-		poolName: node.Labels["worker.gardener.cloud/pool"],
+		poolName: nodeLabels["worker.gardener.cloud/pool"],
 		zone:     zone,
 	}
 	nodeGroup, ok := poolKeyMap[nodePoolKey]
@@ -598,11 +589,11 @@ func checkAndGetFileLastModifiedTime(filePath string) (exist bool, lastModifiedT
 		return
 	}
 	exist = true
-	lastModifiedTime = file.ModTime().UTC()
+	lastModifiedTime = file.ModTime()
 	return
 }
 
-func loadAutoScalerConfig(filePath string) (config gsc.AutoscalerConfig, err error) {
+func loadAutoscalerConfig(filePath string) (config gsc.AutoscalerConfig, err error) {
 	bytes, err := os.ReadFile(filePath)
 	if err != nil {
 		return
@@ -619,26 +610,26 @@ func loadAutoScalerConfig(filePath string) (config gsc.AutoscalerConfig, err err
 func (v *VirtualCloudProvider) checkAndReloadConfig() (bool, error) {
 	exist, lastModifiedTime, err := checkAndGetFileLastModifiedTime(v.configPath)
 	if err != nil {
-		return false, fmt.Errorf("error looking up the virtual autoscaler autoScalerConfig at path: %s, error: %s", v.configPath, err)
+		return false, fmt.Errorf("error looking up the virtual autoscaler autoscalerConfig at path: %s, error: %s", v.configPath, err)
 	}
 	if !exist {
-		klog.Warningf("virtual autoscaler autoScalerConfig is still missing at path: %s", v.configPath)
+		klog.Warningf("virtual autoscaler autoscalerConfig is still missing at path: %s", v.configPath)
 		return false, nil
 	}
 	if v.launchTime.After(lastModifiedTime) {
-		klog.Warningf("Ignoring Old virtual autoScalerConfig at path %q with time %q created before the CA launch time %q", v.configPath, lastModifiedTime, v.launchTime)
+		klog.Warningf("Ignoring Old virtual autoscalerConfig at path %q with time %q created before the CA launch time %q", v.configPath, lastModifiedTime, v.launchTime)
 		return false, nil
 	}
 	if !lastModifiedTime.After(v.configLastModifiedTime) {
 		return false, nil
 	}
-	autoScalerConfig, err := loadAutoScalerConfig(v.configPath)
+	autoscalerConfig, err := loadAutoscalerConfig(v.configPath)
 	if err != nil {
-		klog.Errorf("failed to construct the virtual autoscaler autoScalerConfig from file: %s, error: %s", v.configPath, err)
+		klog.Errorf("failed to construct the virtual autoscaler autoscalerConfig from file: %s, error: %s", v.configPath, err)
 		return false, err
 	}
-	if v.config.Hash != autoScalerConfig.Hash {
-		v.config = &autoScalerConfig
+	if v.config.Hash != autoscalerConfig.Hash {
+		v.config = &autoscalerConfig
 		v.configLastModifiedTime = lastModifiedTime
 		return true, nil
 	}
@@ -831,9 +822,13 @@ func (v *VirtualNodeGroup) changeCreatingInstancesToRunning(ctx context.Context)
 }
 
 func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
-	klog.V(3).Infof("VirtualNodeGroup.IncreseSize called for %q with delta %d", v.Name, delta)
 	ctx := context.Background()
 	//TODO add flags for simulating provider errors ex : ResourceExhaustion
+	if len(v.instances) >= v.MaxSize() {
+		klog.Warningf("VirtualNodeGroup.IncreseSize SPURIOUSLY called by CA core for %q with delta %d", v.Name, delta)
+		return nil
+	}
+	klog.V(3).Infof("VirtualNodeGroup.IncreseSize called for %q with delta %d", v.Name, delta)
 	for i := 0; i < delta; i++ {
 		node, err := v.buildCoreNodeFromTemplate()
 		if err != nil {
@@ -1088,8 +1083,8 @@ func readMachineDeploymentInfos(mcdsJsonFile string) ([]gsc.MachineDeploymentInf
 		}
 		mcdInfo := gsc.MachineDeploymentInfo{
 			SnapshotMeta: gsc.SnapshotMeta{
-				CreationTimestamp: itemObj.GetCreationTimestamp().Time.UTC(),
-				SnapshotTimestamp: time.Now().UTC(),
+				CreationTimestamp: itemObj.GetCreationTimestamp().Time,
+				SnapshotTimestamp: time.Now(),
 				Name:              name,
 				Namespace:         namespace,
 			},
