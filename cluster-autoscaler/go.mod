@@ -20,7 +20,7 @@ require (
 	github.com/aws/aws-sdk-go v1.44.241
 	github.com/cenkalti/backoff/v4 v4.2.1
 	github.com/digitalocean/godo v1.27.0
-	github.com/elankath/gardener-scaling-types v0.0.0-20240724082623-251edd0512fd
+	github.com/elankath/gardener-scaling-common v0.0.0-20240724093749-833f9f267cf4
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/golang/mock v1.6.0
 	github.com/google/go-cmp v0.6.0
@@ -31,7 +31,7 @@ require (
 	github.com/json-iterator/go v1.1.12
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.16.0
-	github.com/samber/lo v1.39.0
+	github.com/samber/lo v1.46.0
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.9.0
 	github.com/vburenin/ifacemaker v1.2.1
@@ -42,14 +42,14 @@ require (
 	golang.org/x/sys v0.21.0
 	google.golang.org/api v0.126.0
 	google.golang.org/grpc v1.59.0
-	google.golang.org/protobuf v1.31.0
+	google.golang.org/protobuf v1.33.0
 	gopkg.in/gcfg.v1 v1.2.3
 	gopkg.in/yaml.v2 v2.4.0
-	k8s.io/api v0.30.2
-	k8s.io/apimachinery v0.30.2
+	k8s.io/api v0.30.3
+	k8s.io/apimachinery v0.30.3
 	k8s.io/apiserver v0.30.0-alpha.3
 	k8s.io/autoscaler/cluster-autoscaler/apis v0.0.0-20240606111128-34690b19c19b
-	k8s.io/client-go v0.30.0-alpha.3
+	k8s.io/client-go v0.30.3
 	k8s.io/cloud-provider v0.30.0-alpha.3
 	k8s.io/cloud-provider-aws v1.27.0
 	k8s.io/component-base v0.30.0-alpha.3
@@ -116,7 +116,7 @@ require (
 	github.com/golang-jwt/jwt/v4 v4.5.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.0.0 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
-	github.com/golang/protobuf v1.5.3 // indirect
+	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/cadvisor v0.48.1 // indirect
 	github.com/google/cel-go v0.17.7 // indirect
 	github.com/google/gnostic-models v0.6.8 // indirect
@@ -204,8 +204,9 @@ require (
 	k8s.io/csi-translation-lib v0.27.0 // indirect
 	k8s.io/dynamic-resource-allocation v0.0.0 // indirect
 	k8s.io/gengo v0.0.0-20230829151522-9cce18d56c01 // indirect
+	k8s.io/gengo/v2 v2.0.0-20240228010128-51d4e06bde70 // indirect
 	k8s.io/kms v0.30.0-alpha.3 // indirect
-	k8s.io/kube-openapi v0.0.0-20231113174909-778a5567bc1e // indirect
+	k8s.io/kube-openapi v0.0.0-20240228011516-70dd3763d340 // indirect
 	k8s.io/kube-scheduler v0.0.0 // indirect
 	k8s.io/kubectl v0.28.0 // indirect
 	k8s.io/mount-utils v0.26.0-alpha.0 // indirect

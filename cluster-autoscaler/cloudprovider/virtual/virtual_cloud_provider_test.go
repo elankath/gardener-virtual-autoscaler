@@ -13,20 +13,20 @@ func TestReadClusterInfo(t *testing.T) {
 }
 
 func TestLoadAutoScalerConfig(t *testing.T) {
-	expectedConfig := gst.AutoScalerConfig{
-		NodeTemplates: map[string]gst.NodeTemplate{
+	expectedConfig := gsc.AutoScalerConfig{
+		NodeTemplates: map[string]gsc.NodeTemplate{
 			"a": {
 				Name:             "a",
-				CPU:              gst.MustParseQuantity("10Mi"),
-				GPU:              gst.MustParseQuantity("12Mi"),
-				Memory:           gst.MustParseQuantity("10Gi"),
-				EphemeralStorage: gst.MustParseQuantity("11Gi"),
+				CPU:              gsc.MustParseQuantity("10Mi"),
+				GPU:              gsc.MustParseQuantity("12Mi"),
+				Memory:           gsc.MustParseQuantity("10Gi"),
+				EphemeralStorage: gsc.MustParseQuantity("11Gi"),
 				InstanceType:     "m5.large",
 				Region:           "eu-west-1",
 				Zone:             "eu-west-1a",
 			},
 		},
-		NodeGroups: map[string]gst.NodeGroupInfo{
+		NodeGroups: map[string]gsc.NodeGroupInfo{
 			"a": {
 				Name:       "a",
 				PoolName:   "p1",
@@ -36,7 +36,7 @@ func TestLoadAutoScalerConfig(t *testing.T) {
 				MaxSize:    5,
 			},
 		},
-		/*WorkerPools: []gst.WorkerPoolInfo{
+		/*WorkerPools: []gsc.WorkerPoolInfo{
 			{
 				Architecture: "arm64",
 				Minimum:      1,
@@ -52,10 +52,10 @@ func TestLoadAutoScalerConfig(t *testing.T) {
 				Zones: []string{"eu-west-1a"},
 			},
 		},*/
-		CASettings: gst.CASettingsInfo{
+		CASettings: gsc.CASettingsInfo{
 			Expander: "least-waste",
-			NodeGroupsMinMax: map[string]gst.MinMax{
-				"a": gst.MinMax{
+			NodeGroupsMinMax: map[string]gsc.MinMax{
+				"a": gsc.MinMax{
 					Min: 1,
 					Max: 5,
 				},
@@ -72,7 +72,7 @@ func TestLoadAutoScalerConfig(t *testing.T) {
 	}
 	bytes, err := json.Marshal(expectedConfig)
 	assert.Nil(t, err)
-	var actualLoadedConfig gst.AutoScalerConfig
+	var actualLoadedConfig gsc.AutoScalerConfig
 	err = json.Unmarshal(bytes, &actualLoadedConfig)
 	assert.Nil(t, err)
 	assert.Equal(t, expectedConfig, actualLoadedConfig)
