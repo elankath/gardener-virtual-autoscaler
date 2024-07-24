@@ -614,7 +614,7 @@ func loadAutoScalerConfig(filePath string) (config gsc.AutoscalerConfig, err err
 	return
 }
 
-func (v *VirtualCloudProvider) refreshConfig() (bool, error) {
+func (v *VirtualCloudProvider) checkAndReloadConfig() (bool, error) {
 	exist, lastModifiedTime, err := checkAndGetFileLastModifiedTime(v.configPath)
 	if err != nil {
 		return false, fmt.Errorf("error looking up the virtual autoscaler autoScalerConfig at path: %s, error: %s", v.configPath, err)
@@ -677,44 +677,6 @@ func (v *VirtualCloudProvider) refreshNodes() error {
 		return err
 	}
 	return nil
-
-	//for _, nodeInfo := range configNodeInfos {
-	//	_, ok := existingNodesByName[nodeInfo.Name]
-	//	if ok {
-	//		continue
-	//	}
-	//	//TODO create CSI object for node
-	//	node := corev1.Node{
-	//		//TypeMeta:   metav1.TypeMeta{
-	//		//	Kind: "Node",
-	//		//	APIVersion: "v1",
-	//		//},
-	//		ObjectMeta: metav1.ObjectMeta{
-	//			Name:      nodeInfo.Name,
-	//			Namespace: nodeInfo.Namespace,
-	//			Labels:    nodeInfo.Labels,
-	//		},
-	//		Spec: corev1.NodeSpec{
-	//			Taints:     nodeInfo.Taints,
-	//			ProviderID: nodeInfo.ProviderID,
-	//		},
-	//		Status: corev1.NodeStatus{
-	//			Capacity:    nodeInfo.Capacity,
-	//			Allocatable: nodeInfo.Allocatable,
-	//		},
-	//	}
-	//	nodeStatus := node.Status
-	//	nd, err := v.clientSet.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
-	//	if err != nil {
-	//		return fmt.Errorf("cannot create node with name %q: %w", nd.Name, err)
-	//	}
-	//	node.Status = nodeStatus
-	//	node.Status.Conditions = cloudprovider.BuildReadyConditions()
-	//	err = adjustNode(v.clientSet, node.Name, node.Status)
-	//	if err != nil {
-	//		return fmt.Errorf("cannot adjust the node with name %q: %w", node.Name, err)
-	//	}
-	//}
 }
 
 func synchronizeNodes(ctx context.Context, clientSet *kubernetes.Clientset, configNodeInfos []gsc.NodeInfo) error {
@@ -792,14 +754,14 @@ func synchronizeNodes(ctx context.Context, clientSet *kubernetes.Clientset, conf
 }
 
 func (v *VirtualCloudProvider) Refresh() error {
-	refreshed, err := v.refreshConfig()
+	configReloaded, err := v.checkAndReloadConfig()
 	if err != nil {
 		return err
 	}
 	if len(v.config.NodeGroups) == 0 {
 		return fmt.Errorf("virtual autoscaler is not initialized")
 	}
-	if refreshed {
+	if configReloaded {
 		err = v.reloadVirtualNodeGroups()
 		if err != nil {
 			return err
@@ -808,14 +770,16 @@ func (v *VirtualCloudProvider) Refresh() error {
 	if len(v.config.NodeGroups) == 0 {
 		return nil
 	}
-	err = v.refreshNodes()
+	if configReloaded {
+		err = v.refreshNodes()
+	}
 	if err != nil {
 		return err
 	}
-	if refreshed {
-		klog.V(2).Infof("completed refresh of virtual cloud provider using config path: %s", v.configPath)
+	if configReloaded {
+		klog.V(2).Infof("completed config reload of virtual cloud provider from path: %s", v.configPath)
 	} else {
-		klog.V(2).Infof("attempted refresh of virtual cloud provider using config path: %s", v.configPath)
+		klog.V(2).Infof("unchanged config for virtual cloud provider at path: %s", v.configPath)
 	}
 	return nil
 }
@@ -883,7 +847,7 @@ func (v *VirtualNodeGroup) IncreaseSize(delta int) error {
 		}
 		klog.Infof("created a new node with name: %s", createdNode.Name)
 	}
-	time.AfterFunc(10*time.Second, func() { v.changeCreatingInstancesToRunning(ctx) })
+	time.AfterFunc(1*time.Second, func() { v.changeCreatingInstancesToRunning(ctx) })
 	return nil
 }
 
