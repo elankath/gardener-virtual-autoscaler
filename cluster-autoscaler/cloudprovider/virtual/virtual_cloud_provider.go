@@ -7,6 +7,7 @@ import (
 	"github.com/elankath/gardener-scaling-types"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -45,7 +46,7 @@ var _ cloudprovider.NodeGroup = (*VirtualNodeGroup)(nil)
 const GPULabel = "virtual/gpu"
 
 type VirtualCloudProvider struct {
-	config                 *gst.AutoScalerConfig
+	config                 *gst.AutoscalerConfig
 	configPath             string
 	configLastModifiedTime time.Time
 	resourceLimiter        *cloudprovider.ResourceLimiter
@@ -125,7 +126,7 @@ func AsSyncMap(mp map[string]*VirtualNodeGroup) (sMap sync.Map) {
 
 func InitializeFromVirtualConfig(virtualAutoscalerConfigPath string, clientSet *kubernetes.Clientset, rl *cloudprovider.ResourceLimiter) (*VirtualCloudProvider, error) {
 	return &VirtualCloudProvider{
-		config: &gst.AutoScalerConfig{
+		config: &gst.AutoscalerConfig{
 			NodeTemplates: make(map[string]gst.NodeTemplate),
 			NodeGroups:    make(map[string]gst.NodeGroupInfo),
 		},
@@ -135,7 +136,7 @@ func InitializeFromVirtualConfig(virtualAutoscalerConfigPath string, clientSet *
 	}, nil
 }
 
-func buildVirtualNodeGroups(clientSet *kubernetes.Clientset, clusterInfo *gst.AutoScalerConfig) (map[string]*VirtualNodeGroup, error) {
+func buildVirtualNodeGroups(clientSet *kubernetes.Clientset, clusterInfo *gst.AutoscalerConfig) (map[string]*VirtualNodeGroup, error) {
 	virtualNodeGroups := make(map[string]*VirtualNodeGroup)
 	for name, ng := range clusterInfo.NodeGroups {
 		names := strings.Split(name, ".")
@@ -394,7 +395,7 @@ func parseCASettingsInfo(caDeploymentData map[string]any) (caSettings gst.CASett
 	return
 }
 
-func readInitClusterInfo(clusterInfoPath string) (cI gst.AutoScalerConfig, err error) {
+func readInitClusterInfo(clusterInfoPath string) (cI gst.AutoscalerConfig, err error) {
 	workerJsonFile := fmt.Sprintf("%s/shoot-worker.json", clusterInfoPath)
 	data, err := os.ReadFile(workerJsonFile)
 	if err != nil {
@@ -615,7 +616,7 @@ func checkAndGetFileLastModifiedTime(filePath string) (exist bool, lastModifiedT
 	return
 }
 
-func loadAutoScalerConfig(filePath string) (config gst.AutoScalerConfig, err error) {
+func loadAutoScalerConfig(filePath string) (config gst.AutoscalerConfig, err error) {
 	bytes, err := os.ReadFile(filePath)
 	if err != nil {
 		return
@@ -685,59 +686,86 @@ func adjustNode(clientSet *kubernetes.Clientset, nodeName string, nodeStatus cor
 }
 
 func (v *VirtualCloudProvider) refreshNodes() error {
-	//if v.config.Mode == gst.AutoscalerReplayerMode {
-	//	klog.Info("autoscaler is being controlled by replayer, will not refresh nodes")
-	//	return nil
-	//}
-	//nodes, err := v.clientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
-	//if err != nil {
-	//	return err
-	//}
-	//nodesByNodeGroup := lo.GroupBy(nodes.Items, func(node corev1.Node) string {
-	//	return node.Labels[NodeGroupLabel]
-	//})
-	//var aggError error
-	//v.virtualNodeGroups.Range(func(key, value any) bool {
-	//	virtualNodeGroup := value.(*VirtualNodeGroup)
-	//	expectedSize := virtualNodeGroup.NodeGroupInfo.TargetSize
-	//	currentSize := len(nodesByNodeGroup[virtualNodeGroup.nonNamespacedName])
-	//	delta := expectedSize - currentSize
-	//	if delta > 0 {
-	//		klog.Infof("add %d extra nodes in nodegroup %s", delta, virtualNodeGroup.nonNamespacedName)
-	//		err = virtualNodeGroup.IncreaseSize(delta)
-	//		if err != nil {
-	//			aggError = err
-	//			return false
-	//		}
-	//	} else {
-	//		klog.Infof("delete %d extra nodes in nodegroup %s", -delta, virtualNodeGroup.nonNamespacedName)
-	//		err = virtualNodeGroup.DecreaseTargetSize(-delta)
-	//		if err != nil {
-	//			aggError = err
-	//			return false
-	//		}
-	//	}
-	//	return true
-	//})
-	initNodes := v.config.InitNodes
-	existingNodes, err := v.clientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	configNodeInfos := v.config.ExistingNodes
+	ctx := context.Background()
+	err := synchronizeNodes(ctx, v.clientSet, configNodeInfos)
 	if err != nil {
 		return err
 	}
-	existingNodesByName := lo.KeyBy(existingNodes.Items, func(n corev1.Node) string {
-		return n.Name
+	return nil
+
+	//for _, nodeInfo := range configNodeInfos {
+	//	_, ok := existingNodesByName[nodeInfo.Name]
+	//	if ok {
+	//		continue
+	//	}
+	//	//TODO create CSI object for node
+	//	node := corev1.Node{
+	//		//TypeMeta:   metav1.TypeMeta{
+	//		//	Kind: "Node",
+	//		//	APIVersion: "v1",
+	//		//},
+	//		ObjectMeta: metav1.ObjectMeta{
+	//			Name:      nodeInfo.Name,
+	//			Namespace: nodeInfo.Namespace,
+	//			Labels:    nodeInfo.Labels,
+	//		},
+	//		Spec: corev1.NodeSpec{
+	//			Taints:     nodeInfo.Taints,
+	//			ProviderID: nodeInfo.ProviderID,
+	//		},
+	//		Status: corev1.NodeStatus{
+	//			Capacity:    nodeInfo.Capacity,
+	//			Allocatable: nodeInfo.Allocatable,
+	//		},
+	//	}
+	//	nodeStatus := node.Status
+	//	nd, err := v.clientSet.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
+	//	if err != nil {
+	//		return fmt.Errorf("cannot create node with name %q: %w", nd.Name, err)
+	//	}
+	//	node.Status = nodeStatus
+	//	node.Status.Conditions = cloudprovider.BuildReadyConditions()
+	//	err = adjustNode(v.clientSet, node.Name, node.Status)
+	//	if err != nil {
+	//		return fmt.Errorf("cannot adjust the node with name %q: %w", node.Name, err)
+	//	}
+	//}
+}
+
+func synchronizeNodes(ctx context.Context, clientSet *kubernetes.Clientset, configNodeInfos []gst.NodeInfo) error {
+	virtualNodeList, err := clientSet.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("cannot list the nodes in virtual cluster: %w", err)
+	}
+	virtualNodesMap := lo.KeyBy(virtualNodeList.Items, func(item corev1.Node) string {
+		return item.Name
 	})
-	for _, nodeInfo := range initNodes {
-		_, ok := existingNodesByName[nodeInfo.Name]
+	snapshotNodeInfosByName := lo.Associate(configNodeInfos, func(item gst.NodeInfo) (string, struct{}) {
+		return item.Name, struct{}{}
+	})
+	for _, vnode := range virtualNodeList.Items {
+		_, ok := snapshotNodeInfosByName[vnode.Name]
 		if ok {
 			continue
 		}
-		//TODO create CSI object for node
+		err = clientSet.CoreV1().Nodes().Delete(ctx, vnode.Name, metav1.DeleteOptions{})
+		if err != nil {
+			return fmt.Errorf("cannot delete the virtual node %q: %w", vnode.Name, err)
+		}
+		delete(virtualNodesMap, vnode.Name)
+	}
+	for _, nodeInfo := range configNodeInfos {
+		oldVNode, exists := virtualNodesMap[nodeInfo.Name]
+		var sameLabels, sameTaints bool
+		if exists {
+			sameLabels = maps.Equal(oldVNode.Labels, nodeInfo.Labels)
+			sameTaints = slices.EqualFunc(oldVNode.Spec.Taints, nodeInfo.Taints, gst.IsEqualTaint)
+		}
+		if exists && sameLabels && sameTaints {
+			continue
+		}
 		node := corev1.Node{
-			//TypeMeta:   metav1.TypeMeta{
-			//	Kind: "Node",
-			//	APIVersion: "v1",
-			//},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      nodeInfo.Name,
 				Namespace: nodeInfo.Namespace,
@@ -753,21 +781,32 @@ func (v *VirtualCloudProvider) refreshNodes() error {
 			},
 		}
 		nodeStatus := node.Status
-		nd, err := v.clientSet.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
+		if !exists {
+			_, err = clientSet.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
+			if apierrors.IsAlreadyExists(err) {
+				klog.Warningf("node already exists. updating node %q", node.Name)
+				_, err = clientSet.CoreV1().Nodes().Update(context.Background(), &node, metav1.UpdateOptions{})
+			}
+			if err == nil {
+				klog.Infof("created node %q", node.Name)
+			}
+		} else {
+			klog.Infof("updating node %q", node.Name)
+			_, err = clientSet.CoreV1().Nodes().Update(context.Background(), &node, metav1.UpdateOptions{})
+		}
 		if err != nil {
-			return fmt.Errorf("cannot create node with name %q: %w", nd.Name, err)
+			return fmt.Errorf("cannot create/update node with name %q: %w", node.Name, err)
 		}
 		node.Status = nodeStatus
-		// fixme : use buildCoreNodefromTemplate to construct node object
 		node.Status.Conditions = cloudprovider.BuildReadyConditions()
-		err = adjustNode(v.clientSet, node.Name, node.Status)
+		err = adjustNode(clientSet, node.Name, node.Status)
 		if err != nil {
 			return fmt.Errorf("cannot adjust the node with name %q: %w", node.Name, err)
 		}
 	}
-
 	return nil
 }
+
 func (v *VirtualCloudProvider) Refresh() error {
 	refreshed, err := v.refreshConfig()
 	if err != nil {
