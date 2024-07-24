@@ -529,9 +529,13 @@ func (v *VirtualCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovide
 	if err != nil {
 		return nil, fmt.Errorf("can't find VirtualNodeGroup for node with name %q: %w", node.Name, err)
 	}
-	nodeLabels := node.Labels
-	maps.Copy(nodeLabels, nodeInCluster.Labels)
-
+	nodeLabels := make(map[string]string)
+	if node.Labels != nil {
+		maps.Copy(nodeLabels, nodeLabels)
+	}
+	if nodeInCluster.Labels != nil {
+		maps.Copy(nodeLabels, nodeInCluster.Labels)
+	}
 	zone, err := getZonefromNodeLabels(nodeLabels)
 	if err != nil {
 		return nil, fmt.Errorf("cant find VirtualNodeGroup for node with with name %q: %w", node.Name, err)
